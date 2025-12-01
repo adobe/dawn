@@ -56,6 +56,7 @@ target_sources(webgpu_c_bundled PRIVATE
     ${WEBGPU_JNI_HEADERS}
     JNIContext.cpp
     JNIContext.h
+    ManualJNI.cpp
     Util.cpp
 )
 

@@ -208,7 +208,12 @@ ResultOrError<Ref<InstanceBase>> InstanceBase::Create(const InstanceDescriptor* 
         TogglesState::CreateFromTogglesDescriptor(instanceTogglesDesc, ToggleStage::Instance);
     // By default disable the AllowUnsafeAPIs instance toggle, it will be inherited to adapters
     // and devices created by this instance if not overriden.
+    // HACK: Force enable AllowUnsafeAPIs for Android build to support AHB features without complex descriptors
+    #if defined(DAWN_PLATFORM_IS_ANDROID) || defined(ANDROID)
+    instanceToggles.Default(Toggle::AllowUnsafeAPIs, true);
+    #else
     instanceToggles.Default(Toggle::AllowUnsafeAPIs, false);
+    #endif
 
     Ref<InstanceBase> instance = AcquireRef(new InstanceBase(instanceToggles));
     DAWN_TRY(instance->Initialize(unpacked));
