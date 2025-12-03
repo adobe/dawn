@@ -96,10 +96,10 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
         hasRequiredFeatures = false;
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature StaticSamplers enabled!");
     }
-    // if (!device.HasFeature(wgpu::FeatureName::DawnMultiPlanarFormats)) {
-    //     hasRequiredFeatures = false;
-    //     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature DawnMultiPlanarFormats enabled!");
-    // }
+    if (!device.HasFeature(wgpu::FeatureName::SharedFenceSyncFD)) {
+        hasRequiredFeatures = false;
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature SharedFenceSyncFD enabled!");
+    }
 
     if(!hasRequiredFeatures) {
         // Log available features to help debug
@@ -157,7 +157,6 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
 
     // If properties are empty (Format=0, Usage=0), it means ImportSharedTextureMemory failed to reflect properties from AHB.
     // This implies that AHB functions failed or properties were invalid.
-    // IMPORTANT: If import failed, cMemory is an Error Object. Continuing will crash later.
     if (properties.format == wgpu::TextureFormat::Undefined) {
          __android_log_print(ANDROID_LOG_ERROR, kLogTag, "SharedTextureMemory has Undefined format. Import likely failed internally. Aborting.");
          return JNI_FALSE;
@@ -346,8 +345,6 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
         return JNI_FALSE;
     }
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created shader module: %p", shaderModule.Get());
-
-    // Destination texture is passed in from Kotlin - no need to create one
 
     // --- Create Pipeline Layout using our bind group layout ---
     wgpu::PipelineLayoutDescriptor pipelineLayoutDesc = {};
