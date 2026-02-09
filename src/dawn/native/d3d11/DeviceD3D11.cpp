@@ -256,6 +256,7 @@ MaybeError Device::TickImpl() {
     // error during execution and early out as a result.
     DAWN_TRY(CheckDebugLayerAndGenerateErrors());
     DAWN_TRY(ToBackend(GetQueue())->SubmitPendingCommands());
+    UnmapDestroyedBuffers();
     return {};
 }
 
@@ -399,6 +400,8 @@ MaybeError Device::CopyFromStagingToBuffer(BufferBase* source,
     // D3D11 requires that buffers are unmapped before being used in a copy.
     DAWN_TRY(source->Unmap());
 
+    auto scopedUseBuffer = source->UseInternal();
+
     auto commandContext =
         ToBackend(GetQueue())->GetScopedPendingCommandContext(QueueBase::SubmitMode::Normal);
     return Buffer::Copy(&commandContext, ToBackend(source), sourceOffset, size,
@@ -504,10 +507,32 @@ void Device::DisposeKeyedMutex(ComPtr<IDXGIKeyedMutex> dxgiKeyedMutex) {
     // Nothing to do, the ComPtr will release the keyed mutex.
 }
 
+void Device::DeferUnmapDestroyedBuffer(ComPtr<ID3D11Buffer> buffer) {
+    if (!buffer) {
+        return;
+    }
+    mPendingDestroyedBufferUnmaps->push_back(std::move(buffer));
+}
+
+void Device::UnmapDestroyedBuffers() {
+    auto commandContext =
+        ToBackend(GetQueue())
+            ->GetScopedPendingCommandContext(ExecutionQueueBase::SubmitMode::Passive);
+
+    mPendingDestroyedBufferUnmaps.Use([&](auto buffers) {
+        for (auto& buffer : *buffers) {
+            commandContext.Unmap(buffer.Get(), 0);
+        }
+        buffers->clear();
+    });
+}
+
 bool Device::ReduceMemoryUsageImpl() {
     mVertexShaderCache.Clear();
     mPixelShaderCache.Clear();
     mComputeShaderCache.Clear();
+
+    UnmapDestroyedBuffers();
 
     // D3D11 defers the deletion of resources until we call Flush().
     // So trigger a Flush() here to force deleting any pending resources.

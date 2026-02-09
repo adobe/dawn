@@ -44,6 +44,8 @@
     X(kSubgroupUniformity, SubgroupUniformity)                                     \
     X(kTextureAndSamplerLet, TextureAndSamplerLet)                                 \
     X(kBufferView, BufferView)                                                     \
+    X(kFilteringParameters, FilteringParameters)                                   \
+    X(kSwizzleAssignment, SwizzleAssignment)                                       \
     /* ----------------- entries below are only for testing  ------------------ */ \
     X(kChromiumTestingUnimplemented, ChromiumTestingUnimplemented)                 \
     X(kChromiumTestingUnsafeExperimental, ChromiumTestingUnsafeExperimental)       \

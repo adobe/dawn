@@ -28,6 +28,7 @@
 #ifndef SRC_DAWN_NATIVE_D3D11_QUEUED3D11_H_
 #define SRC_DAWN_NATIVE_D3D11_QUEUED3D11_H_
 
+#include <optional>
 #include <vector>
 
 #include "dawn/common/MutexProtected.h"
@@ -47,6 +48,9 @@ class Queue : public d3d::Queue {
 
     ScopedCommandRecordingContext GetScopedPendingCommandContext(SubmitMode submitMode,
                                                                  bool lockD3D11Scope = true);
+    std::optional<ScopedCommandRecordingContext> TryGetScopedPendingCommandContext(
+        SubmitMode submitMode,
+        bool lockD3D11Scope = true);
     ScopedSwapStateCommandRecordingContext GetScopedSwapStatePendingCommandContext(
         SubmitMode submitMode);
     virtual MaybeError NextSerial() = 0;
@@ -55,14 +59,10 @@ class Queue : public d3d::Queue {
     // DeviceBase is fully created.
     MaybeError InitializePendingContext();
 
-    // Register the pending map buffer to be checked.
-    void TrackPendingMapBuffer(Ref<Buffer>&& buffer,
+    // Schedule a buffer for mapping.
+    void ScheduleBufferMapping(Ref<Buffer>&& buffer,
                                wgpu::MapMode mode,
                                ExecutionSerial readySerial);
-
-    // Defer buffer unmap until next time GetScopedPendingCommandContext() or
-    // GetScopedSwapStatePendingCommandContext() is called.
-    void DeferUnmap(Ref<Buffer>&& buffer);
 
     const Ref<SharedFence>& GetSharedFence() const { return mSharedFence; }
 
@@ -96,11 +96,14 @@ class Queue : public d3d::Queue {
 
     virtual ResultOrError<ExecutionSerial> CheckCompletedSerialsImpl() = 0;
 
-    // Check all pending map buffers, and actually map the ready ones.
-    MaybeError CheckAndMapReadyBuffers(ExecutionSerial completedSerial);
+    // Check and process scheduled buffer mappings.
+    MaybeError CheckScheduledBufferMappings(ExecutionSerial completedSerial);
 
-    // Perform deferred unmaps on pending buffers.
-    void PerformDeferredUnmaps(const ScopedCommandRecordingContext* commandContext);
+    // Helper template to create scoped command contexts with common logic
+    template <typename ScopedContextType, typename... Args>
+    ScopedContextType CreateScopedCommandContext(SubmitMode submitMode,
+                                                 CommandRecordingContext::Guard&& commands,
+                                                 Args&&... args);
 
     ComPtr<ID3D11Fence> mFence;
     Ref<SharedFence> mSharedFence;
@@ -112,7 +115,6 @@ class Queue : public d3d::Queue {
         wgpu::MapMode mode;
     };
     MutexProtected<SerialMap<ExecutionSerial, BufferMapEntry>> mPendingMapBuffers;
-    MutexProtected<std::vector<Ref<Buffer>>> mPendingUnmapBuffers;
 };
 
 }  // namespace dawn::native::d3d11

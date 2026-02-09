@@ -474,7 +474,10 @@ void BufferBase::DestroyImpl(DestroyReason reason) {
             case BufferState::MappedAtCreation: {
                 [[maybe_unused]] bool hadError =
                     GetDevice()->ConsumedError(UnmapInternal(true), "calling %s.Destroy().", this);
-                state = mState.load(std::memory_order::acquire);
+                // The buffer state should be unmapped after UnmapInternal() returns. Use that state
+                // in the next compare exchange but another thread can update the state causing this
+                // loop to run again.
+                state = BufferState::Unmapped;
                 break;
             }
             case BufferState::InUse: {
@@ -546,6 +549,8 @@ wgpu::BufferMapState BufferBase::APIGetMapState() const {
         case BufferState::InUse:
         case BufferState::SharedMemoryNoAccess:
             return wgpu::BufferMapState::Unmapped;
+        default:
+            DAWN_UNREACHABLE();
     }
 }
 
@@ -913,10 +918,7 @@ MaybeError BufferBase::UnmapInternal(bool forDestroy) {
                       forDestroy ? BufferState::Destroyed : BufferState::Unmapped);
             mState.store(BufferState::Unmapped, std::memory_order::release);
 
-            GetDevice()->DeferIfLocked(
-                [eventManager = GetInstance()->GetEventManager(), mapEvent = std::move(event)]() {
-                    eventManager->SetFutureReady(mapEvent.Get());
-                });
+            GetInstance()->GetEventManager()->SetFutureReady(event.Get());
             return {};
         }
 
@@ -1024,11 +1026,16 @@ bool BufferBase::NeedsInitialization() const {
 }
 
 void BufferBase::MarkUsedInPendingCommands() {
+    // TODO(crbug.com/422741977): Consider storing the pending serial once, perhaps in a
+    // CommandRecordingContextBase, so that we don't need to load the atomic value repeatedly.
+    MarkUsedInPendingCommands(GetDevice()->GetQueue()->GetPendingCommandSerial());
+}
+
+void BufferBase::MarkUsedInPendingCommands(ExecutionSerial pendingSerial) {
     DAWN_ASSERT(!GetDevice()->IsValidationEnabled() ||
                 mState.load(std::memory_order::relaxed) == BufferState::InUse);
-    ExecutionSerial serial = GetDevice()->GetQueue()->GetPendingCommandSerial();
-    DAWN_ASSERT(serial >= mLastUsageSerial);
-    mLastUsageSerial = serial;
+    DAWN_ASSERT(pendingSerial >= mLastUsageSerial);
+    mLastUsageSerial = pendingSerial;
 }
 
 ExecutionSerial BufferBase::GetLastUsageSerial() const {

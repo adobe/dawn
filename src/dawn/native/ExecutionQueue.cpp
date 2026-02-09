@@ -66,6 +66,8 @@ ExecutionSerial ExecutionQueueBase::GetCompletedCommandSerial() const {
 MaybeError ExecutionQueueBase::WaitForQueueSerial(ExecutionSerial waitSerial, Nanoseconds timeout) {
     // Serial is already complete.
     if (waitSerial <= GetCompletedCommandSerial()) {
+        // Ensure that all tasks related to the serial have been triggered.
+        UpdateCompletedSerialTo(waitSerial);
         return {};
     }
 

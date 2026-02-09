@@ -483,6 +483,7 @@ MaybeError ParseSPIRV(const std::vector<uint32_t>& spirv,
 
     tint::wgsl::writer::Options options;
     options.allow_non_uniform_derivatives = allowNonUniformDerivatives;
+    options.disable_unreachable_code_warning = true;
     options.allowed_features = allowedFeatures.ToTint();
     auto wgslResult = tint::wgsl::writer::ProgramFromIR(irResult.Get(), options);
 
@@ -860,7 +861,7 @@ ResultOrError<std::unique_ptr<EntryPointMetadata>> ReflectEntryPointUsingTint(
         // Vertex output (inter-stage variables) reflection.
         uint32_t clipDistancesSlots = 0;
         if (entryPoint.clip_distances_size.has_value()) {
-            clipDistancesSlots = RoundUp(*entryPoint.clip_distances_size, 4) / 4;
+            clipDistancesSlots = uint32_t(RoundUp(*entryPoint.clip_distances_size, 4) / 4);
         }
         uint32_t minInvalidLocation = maxInterStageShaderVariables - clipDistancesSlots;
         for (const auto& outputVar : entryPoint.output_variables) {
@@ -899,7 +900,7 @@ ResultOrError<std::unique_ptr<EntryPointMetadata>> ReflectEntryPointUsingTint(
 
         // Other vertex metadata.
         metadata->totalInterStageShaderVariables =
-            entryPoint.output_variables.size() + clipDistancesSlots;
+            uint32_t(entryPoint.output_variables.size()) + clipDistancesSlots;
         if (metadata->totalInterStageShaderVariables > maxInterStageShaderVariables) {
             size_t userDefinedOutputVariables = entryPoint.output_variables.size();
 
@@ -958,7 +959,7 @@ ResultOrError<std::unique_ptr<EntryPointMetadata>> ReflectEntryPointUsingTint(
             }
         }
 
-        uint32_t totalInterStageShaderVariables = entryPoint.input_variables.size();
+        uint32_t totalInterStageShaderVariables = uint32_t(entryPoint.input_variables.size());
 
         // Other fragment metadata
         metadata->usesSampleMaskOutput = entryPoint.output_sample_mask_used;
@@ -1384,10 +1385,10 @@ ResultOrError<Extent3D> ValidateComputeStageWorkgroupSize(
     if (workgroupInfo.subgroup_size.has_value()) {
         const uint32_t explicitSubgroupSize = workgroupInfo.subgroup_size.value();
         DAWN_ASSERT(explicitSubgroupSize > 0);
-        DAWN_INVALID_IF((numInvocations % explicitSubgroupSize != 0),
-                        "The total number of workgroup invocations (%u) is not a multiple of the "
+        DAWN_INVALID_IF((workgroupInfo.x % explicitSubgroupSize != 0),
+                        "The x-dimension of workgroup invocations (%u) is not a multiple of the "
                         "subgroup_size attribute (%u)",
-                        numInvocations, explicitSubgroupSize);
+                        workgroupInfo.x, explicitSubgroupSize);
     }
 
     return Extent3D{workgroupInfo.x, workgroupInfo.y, workgroupInfo.z};
@@ -1395,7 +1396,8 @@ ResultOrError<Extent3D> ValidateComputeStageWorkgroupSize(
 
 MaybeError ValidateExplicitComputeSubgroupSize(const tint::WorkgroupInfo& workgroupInfo,
                                                uint32_t minExplicitSubgroupSize,
-                                               uint32_t maxExplicitSubgroupSize) {
+                                               uint32_t maxExplicitSubgroupSize,
+                                               uint32_t maxComputeWorkgroupSubgroups) {
     if (workgroupInfo.subgroup_size.has_value()) {
         DAWN_ASSERT(minExplicitSubgroupSize > 0 && maxExplicitSubgroupSize > 0);
         const uint32_t explicitSubgroupSize = workgroupInfo.subgroup_size.value();
@@ -1405,6 +1407,13 @@ MaybeError ValidateExplicitComputeSubgroupSize(const tint::WorkgroupInfo& workgr
             "The subgroup_size attribute (%u) is not in the allowed range "
             "[minExplicitComputeSubgroupSize, maxExplicitComputeSubgroupSize] ([%u, %u]).",
             explicitSubgroupSize, minExplicitSubgroupSize, maxExplicitSubgroupSize);
+        uint64_t numInvocations =
+            static_cast<uint64_t>(workgroupInfo.x) * workgroupInfo.y * workgroupInfo.z;
+        DAWN_INVALID_IF(
+            numInvocations > maxComputeWorkgroupSubgroups * explicitSubgroupSize,
+            "The total number of workgroup invocations (%u) exceeds the product of"
+            "maxComputeWorkgroupSubgroups and the subgroup_size attribute (%u * %u = %u).",
+            numInvocations, maxComputeWorkgroupSubgroups, explicitSubgroupSize, numInvocations);
     }
 
     return {};
@@ -1715,6 +1724,8 @@ MaybeError ValidateSubgroupMatrixConfiguration(const tint::SubgroupMatrixInfo& s
                 return "i32";
             case tint::SubgroupMatrixType::kU32:
                 return "u32";
+            default:
+                DAWN_UNREACHABLE();
         }
     };
 
@@ -2110,7 +2121,7 @@ ShaderModuleParseRequest ShaderModuleBase::GenerateShaderModuleParseRequest(
             spirvOptionsDescriptor.allowNonUniformDerivatives = mAllowSpirvNonUniformDerivitives;
             spirvDescriptor.nextInChain = &spirvOptionsDescriptor;
 
-            spirvDescriptor.codeSize = mOriginalSpirv.size();
+            spirvDescriptor.codeSize = uint32_t(mOriginalSpirv.size());
             spirvDescriptor.code = mOriginalSpirv.data();
             descriptor.nextInChain = &spirvDescriptor;
             break;

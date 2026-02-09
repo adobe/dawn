@@ -198,6 +198,66 @@ constexpr std::string_view kInterpolationTypeStrings[] = {
     "perspective",
 };
 
+/// The sampler filtering.
+enum class SamplerFiltering : uint8_t {
+    kUndefined,
+    kFiltering,
+    kNonFiltering,
+};
+
+/// @param value the enum value
+/// @returns the string for the given enum value
+std::string_view ToString(SamplerFiltering value);
+
+/// @param out the stream to write to
+/// @param value the SamplerFiltering
+/// @returns @p out so calls can be chained
+template <typename STREAM>
+    requires(traits::IsOStream<STREAM>)
+auto& operator<<(STREAM& out, SamplerFiltering value) {
+    return out << ToString(value);
+}
+
+/// ParseSamplerFiltering parses a SamplerFiltering from a string.
+/// @param str the string to parse
+/// @returns the parsed enum, or SamplerFiltering::kUndefined if the string could not be parsed.
+SamplerFiltering ParseSamplerFiltering(std::string_view str);
+
+constexpr std::string_view kSamplerFilteringStrings[] = {
+    "filtering",
+    "non_filtering",
+};
+
+/// The texture filterable.
+enum class TextureFilterable : uint8_t {
+    kUndefined,
+    kFilterable,
+    kUnfilterable,
+};
+
+/// @param value the enum value
+/// @returns the string for the given enum value
+std::string_view ToString(TextureFilterable value);
+
+/// @param out the stream to write to
+/// @param value the TextureFilterable
+/// @returns @p out so calls can be chained
+template <typename STREAM>
+    requires(traits::IsOStream<STREAM>)
+auto& operator<<(STREAM& out, TextureFilterable value) {
+    return out << ToString(value);
+}
+
+/// ParseTextureFilterable parses a TextureFilterable from a string.
+/// @param str the string to parse
+/// @returns the parsed enum, or TextureFilterable::kUndefined if the string could not be parsed.
+TextureFilterable ParseTextureFilterable(std::string_view str);
+
+constexpr std::string_view kTextureFilterableStrings[] = {
+    "filterable",
+    "unfilterable",
+};
+
 /// Address space of a given pointer.
 enum class SubgroupMatrixKind : uint8_t {
     kUndefined,
@@ -894,7 +954,6 @@ enum class BuiltinFn : uint8_t {
     kSmoothstep,
     kSqrt,
     kStep,
-    kStorageBarrier,
     kTan,
     kTanh,
     kTranspose,
@@ -906,6 +965,7 @@ enum class BuiltinFn : uint8_t {
     kUnpack4X8Unorm,
     kUnpack4XI8,
     kUnpack4XU8,
+    kStorageBarrier,
     kWorkgroupBarrier,
     kTextureBarrier,
     kTextureDimensions,
@@ -1074,7 +1134,6 @@ constexpr BuiltinFn kBuiltinFns[] = {
     BuiltinFn::kSmoothstep,
     BuiltinFn::kSqrt,
     BuiltinFn::kStep,
-    BuiltinFn::kStorageBarrier,
     BuiltinFn::kTan,
     BuiltinFn::kTanh,
     BuiltinFn::kTranspose,
@@ -1086,6 +1145,7 @@ constexpr BuiltinFn kBuiltinFns[] = {
     BuiltinFn::kUnpack4X8Unorm,
     BuiltinFn::kUnpack4XI8,
     BuiltinFn::kUnpack4XU8,
+    BuiltinFn::kStorageBarrier,
     BuiltinFn::kWorkgroupBarrier,
     BuiltinFn::kTextureBarrier,
     BuiltinFn::kTextureDimensions,
@@ -1235,7 +1295,6 @@ constexpr const char* kBuiltinFnStrings[] = {
     "smoothstep",
     "sqrt",
     "step",
-    "storageBarrier",
     "tan",
     "tanh",
     "transpose",
@@ -1247,6 +1306,7 @@ constexpr const char* kBuiltinFnStrings[] = {
     "unpack4x8unorm",
     "unpack4xI8",
     "unpack4xU8",
+    "storageBarrier",
     "workgroupBarrier",
     "textureBarrier",
     "textureDimensions",

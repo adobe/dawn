@@ -114,6 +114,7 @@ ShaderModule::~ShaderModule() = default;
     X(uint32_t, maxSubgroupSize)                                                     \
     X(uint32_t, minExplicitComputeSubgroupSize)                                      \
     X(uint32_t, maxExplicitComputeSubgroupSize)                                      \
+    X(uint32_t, maxComputeWorkgroupSubgroups)                                        \
     X(bool, usesSubgroupMatrix)                                                      \
     X(std::vector<SubgroupMatrixConfig>, subgroupMatrixConfig)                       \
     X(tint::spirv::writer::Options, tintOptions)                                     \
@@ -286,6 +287,8 @@ ResultOrError<ShaderModule::ModuleAndSpirv> ShaderModule::GetHandleAndSpirv(
             GetDevice()->GetAdapter()->GetPhysicalDevice()->GetMinExplicitComputeSubgroupSize();
         req.maxExplicitComputeSubgroupSize =
             GetDevice()->GetAdapter()->GetPhysicalDevice()->GetMaxExplicitComputeSubgroupSize();
+        req.maxComputeWorkgroupSubgroups =
+            GetDevice()->GetAdapter()->GetPhysicalDevice()->GetMaxComputeWorkgroupSubgroups();
     }
 
     CacheResult<CompiledSpirv> compilation;
@@ -328,9 +331,9 @@ ResultOrError<ShaderModule::ModuleAndSpirv> ShaderModule::GetHandleAndSpirv(
                     _, ValidateComputeStageWorkgroupSize(
                            tintResult->workgroup_info, r.usesSubgroupMatrix, r.maxSubgroupSize,
                            r.limits, r.adapterSupportedLimits.UnsafeGetValue()));
-                DAWN_TRY(ValidateExplicitComputeSubgroupSize(tintResult->workgroup_info,
-                                                             r.minExplicitComputeSubgroupSize,
-                                                             r.maxExplicitComputeSubgroupSize));
+                DAWN_TRY(ValidateExplicitComputeSubgroupSize(
+                    tintResult->workgroup_info, r.minExplicitComputeSubgroupSize,
+                    r.maxExplicitComputeSubgroupSize, r.maxComputeWorkgroupSubgroups));
             }
 
             DAWN_TRY(ValidateSubgroupMatrixConfiguration(tintResult->subgroup_matrix_info,
@@ -344,6 +347,10 @@ ResultOrError<ShaderModule::ModuleAndSpirv> ShaderModule::GetHandleAndSpirv(
         "Vulkan.CompileShaderToSPIRV");
 
 #ifdef DAWN_ENABLE_SPIRV_VALIDATION
+    if (GetDevice()->IsToggleEnabled(Toggle::DumpShaders)) {
+        DumpSpirv(GetDevice(), compilation->spirv.data(), compilation->spirv.size());
+    }
+
     if (GetDevice()->IsToggleEnabled(Toggle::EnableSpirvValidation)) {
         SCOPED_DAWN_HISTOGRAM_TIMER_MICROS(GetDevice()->GetPlatform(), "Vulkan.ValidateSpirv");
 
@@ -351,10 +358,6 @@ ResultOrError<ShaderModule::ModuleAndSpirv> ShaderModule::GetHandleAndSpirv(
         const bool spv14 = GetDevice()->IsToggleEnabled(Toggle::UseSpirv14);
         DAWN_TRY(ValidateSpirv(GetDevice(), compilation->spirv.data(), compilation->spirv.size(),
                                spv14));
-    }
-
-    if (GetDevice()->IsToggleEnabled(Toggle::DumpShaders)) {
-        DumpSpirv(GetDevice(), compilation->spirv.data(), compilation->spirv.size());
     }
 #endif
 

@@ -450,16 +450,22 @@ luci.console_view_entry(
 # * cmake-linux-clang-rel-x64
 #   * dawn-linux-x64-sws-cmake-rel
 #   * dawn-cq-linux-x64-sws-cmake-rel
+# * cmake-mac-dbg
+#   * dawn-mac-x64-sws-cmake-dbg
+#   * dawn-cq-mac-x64-sws-cmake-rel
+# * cmake-mac-rel
+#   * dawn-mac-x64-sws-cmake-rel
+#   * dawn-cq-mac-x64-sws-cmake-rel
+# * cmake-win-msvc-rel-x64
+#   * dawn-win-x64-sws-msvc-cmake-rel
+#   * dawn-cq-win-x64-msvc-cmake-rel
 
 # The following CMake builders have been removed due to deciding that they were
 # not providing value in go/dawn-standalone-builders-dd.
 # * cmake-linux-clang-dbg-x64-asan
 # * cmake-linux-clang-dbg-x64-ubsan
 
-dawn_cmake_standalone_builder("cmake-mac-dbg", clang = True, debug = True, cpu = "x64", asan = False, ubsan = False, experimental = False)
-dawn_cmake_standalone_builder("cmake-mac-rel", clang = True, debug = False, cpu = "x64", asan = False, ubsan = False, experimental = False)
 dawn_cmake_standalone_builder("cmake-win-msvc-dbg-x64", clang = False, debug = True, cpu = "x64", asan = False, ubsan = False)
-dawn_cmake_standalone_builder("cmake-win-msvc-rel-x64", clang = False, debug = False, cpu = "x64", asan = False, ubsan = False)
 
 clang_tidy_dawn_tryjob()
 

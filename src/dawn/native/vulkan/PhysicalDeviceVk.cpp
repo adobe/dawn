@@ -210,6 +210,8 @@ MaybeError PhysicalDevice::InitializeImpl() {
 
     mMinExplicitComputeSubgroupSize = mDeviceInfo.subgroupSizeControlProperties.minSubgroupSize;
     mMaxExplicitComputeSubgroupSize = mDeviceInfo.subgroupSizeControlProperties.maxSubgroupSize;
+    mMaxComputeWorkgroupSubgroups =
+        mDeviceInfo.subgroupSizeControlProperties.maxComputeWorkgroupSubgroups;
 
     // Check for essential Vulkan extensions and features
 
@@ -350,6 +352,13 @@ void PhysicalDevice::InitializeSupportedFeaturesImpl() {
         EnableFeature(Feature::DepthClipControl);
     }
 
+    if (mDeviceInfo.HasExt(DeviceExt::MultisampledRenderToSingleSampled) &&
+        mDeviceInfo.multisampledRenderToSingleSampledFeatures.multisampledRenderToSingleSampled ==
+            VK_TRUE) {
+        // TODO(crbug.com/481324378): Re-enable MSAARenderToSingleSampled after Skia usage of the
+        // feature is fixed.
+    }
+
     if (mDeviceInfo.HasExt(DeviceExt::ExternalMemoryAndroidHardwareBuffer) &&
         mDeviceInfo.samplerYCbCrConversionFeatures.samplerYcbcrConversion == VK_TRUE) {
         EnableFeature(Feature::YCbCrVulkanSamplers);
@@ -473,11 +482,11 @@ void PhysicalDevice::InitializeSupportedFeaturesImpl() {
     // Some devices (PowerVR GE8320) can apparently report subgroup size of 1.
     const bool allowSubgroupSizeRanges =
         mSubgroupMinSize >= kDefaultSubgroupMinSize && mSubgroupMaxSize <= kDefaultSubgroupMaxSize;
-    if (hasBaseSubgroupSupport && hasRequiredF16Support && allowSubgroupSizeRanges) {
-        EnableFeature(Feature::Subgroups);
 
-        // We have already required `VK_EXT_subgroup_size_control` for `Subgroups` (see condition 4)
-        EnableFeature(Feature::ChromiumExperimentalSubgroupSizeControl);
+    const bool supportsSubgroupsFeature =
+        hasBaseSubgroupSupport && hasRequiredF16Support && allowSubgroupSizeRanges;
+    if (supportsSubgroupsFeature) {
+        EnableFeature(Feature::Subgroups);
     }
 
     // Enable subgroup matrix if all of the following are true:
@@ -506,6 +515,10 @@ void PhysicalDevice::InitializeSupportedFeaturesImpl() {
         if (!badDriver) {
             EnableFeature(Feature::ChromiumExperimentalSubgroupMatrix);
         }
+    }
+
+    if (supportsSubgroupsFeature && hasComputeFullSubgroups) {
+        EnableFeature(Feature::ChromiumExperimentalSubgroupSizeControl);
     }
 
     if (mDeviceInfo.HasExt(DeviceExt::ExternalMemoryHost) &&
@@ -926,6 +939,32 @@ void PhysicalDevice::SetupBackendAdapterToggles(dawn::platform::Platform* platfo
     adapterToggles->Default(
         Toggle::DecomposeUniformBuffers,
         platform->IsFeatureEnabled(platform::Features::kWebGPUDecomposeUniformBuffers));
+
+    // VulkanUseDynamicRendering and VulkanUseCreateRenderPass2 are treated as Adapter toggles
+    // because they affect whether or not the MSAARenderToSingleSampled feature is available.
+
+    // Use dynamic rendering by default if the corresponding extension is available.
+    // Also disable on older Intel devices, which have been observed to have driver issues with
+    // the dynamic rendering path.
+    if (!GetDeviceInfo().HasExt(DeviceExt::DynamicRendering) ||
+        GetDeviceInfo().dynamicRenderingFeatures.dynamicRendering == VK_FALSE ||
+        (gpu_info::IsIntel(GetVendorId()) &&
+         gpu_info::GetIntelGen(GetVendorId(), GetDeviceId()) <= gpu_info::IntelGen::Gen9)) {
+        adapterToggles->ForceSet(Toggle::VulkanUseDynamicRendering, false);
+    } else {
+        // TODO(crbug.com/463893794): Defaulted to false until ExpandResolveTexture is supported
+        // when dynamic rendering is enabled.
+        adapterToggles->Default(Toggle::VulkanUseDynamicRendering, false);
+    }
+
+    // Use CreateRenderPass2KHR by default if the corresponding extension is available. Disabled if
+    // dynamic rendering is being used for clarity.
+    if (!GetDeviceInfo().HasExt(DeviceExt::CreateRenderPass2) ||
+        adapterToggles->IsEnabled(Toggle::VulkanUseDynamicRendering)) {
+        adapterToggles->ForceSet(Toggle::VulkanUseCreateRenderPass2, false);
+    } else {
+        adapterToggles->Default(Toggle::VulkanUseCreateRenderPass2, true);
+    }
 }
 
 void PhysicalDevice::SetupBackendDeviceToggles(dawn::platform::Platform* platform,
@@ -1089,11 +1128,12 @@ void PhysicalDevice::SetupBackendDeviceToggles(dawn::platform::Platform* platfor
     // extension is available. Override the decision if it is not applicable or
     // zeroInitializeWorkgroupMemoryFeatures.shaderZeroInitializeWorkgroupMemory == VK_FALSE.
     // Never use the extension on Mali devices due to a known bug (see crbug.com/tint/2101).
-    // Pixel 10 workgroup zero init does not always work as expected (see crbug.com/479242793).
+    // Pixel 10 workgroup zero init does not always work as expected (see crbug.com/479242793). We
+    // have conservatively enabled this for all of imagination.
     if (!GetDeviceInfo().HasExt(DeviceExt::ZeroInitializeWorkgroupMemory) ||
         GetDeviceInfo().zeroInitializeWorkgroupMemoryFeatures.shaderZeroInitializeWorkgroupMemory ==
             VK_FALSE ||
-        IsAndroidARM() || IsPixel10()) {
+        IsAndroidARM() || gpu_info::IsImgTec(GetVendorId())) {
         deviceToggles->ForceSet(Toggle::VulkanUseZeroInitializeWorkgroupMemoryExtension, false);
     }
     // By default try to initialize workgroup memory with OpConstantNull according to the Vulkan
@@ -1171,28 +1211,8 @@ void PhysicalDevice::SetupBackendDeviceToggles(dawn::platform::Platform* platfor
         deviceToggles->ForceSet(Toggle::UseSpirv14, false);
     }
 
-    // Use dynamic rendering by default if the corresponding extension is available.
-    // Also disable on older Intel devices, which have been observed to have driver issues with
-    // the dynamic rendering path.
-    if (!GetDeviceInfo().HasExt(DeviceExt::DynamicRendering) ||
-        GetDeviceInfo().dynamicRenderingFeatures.dynamicRendering == VK_FALSE ||
-        (gpu_info::IsIntel(GetVendorId()) &&
-         gpu_info::GetIntelGen(GetVendorId(), GetDeviceId()) <= gpu_info::IntelGen::Gen9)) {
-        deviceToggles->ForceSet(Toggle::VulkanUseDynamicRendering, false);
-    } else {
-        // TODO(crbug.com/463893794): Defaulted to false until ExpandResolveTexture is supported
-        // when dynamic rendering is enabled.
-        deviceToggles->Default(Toggle::VulkanUseDynamicRendering, false);
-    }
-
-    // Use CreateRenderPass2KHR by default if the corresponding extension is available. Disabled if
-    // dynamic rendering is being used for clarity.
-    if (!GetDeviceInfo().HasExt(DeviceExt::CreateRenderPass2) ||
-        deviceToggles->IsEnabled(Toggle::VulkanUseDynamicRendering)) {
-        deviceToggles->ForceSet(Toggle::VulkanUseCreateRenderPass2, false);
-    } else {
-        deviceToggles->Default(Toggle::VulkanUseCreateRenderPass2, true);
-    }
+    // Vulkan waiting is already thread safe.
+    deviceToggles->Default(Toggle::WaitIsThreadSafe, true);
 
     // Enable validation of generated SPIR-V by default.
     // Graphite and other native clients may turn this off.
@@ -1245,6 +1265,18 @@ FeatureValidationResult PhysicalDevice::ValidateFeatureSupportedWithTogglesImpl(
                 !toggles.IsEnabled(Toggle::VulkanEnableF16OnNvidia)) {
                 return FeatureValidationResult(
                     absl::StrFormat("Feature %s is not yet supported on Nvidia GPUs", feature));
+            }
+            break;
+
+        case wgpu::FeatureName::MSAARenderToSingleSampled:
+            // Must be using either Dynamic Rendering or CreateRenderPass2 for this feature to be
+            // available.
+            if (!toggles.IsEnabled(Toggle::VulkanUseDynamicRendering) &&
+                !toggles.IsEnabled(Toggle::VulkanUseCreateRenderPass2)) {
+                return FeatureValidationResult(
+                    absl::StrFormat("Feature %s requires either the VulkanUseDynamicRendering or "
+                                    "VulkanUseCreateRenderPass2 toggle on Vulkan",
+                                    feature));
             }
             break;
 
@@ -1538,6 +1570,8 @@ void PhysicalDevice::PopulateBackendProperties(UnpackedPtr<AdapterInfo>& info,
             GetMinExplicitComputeSubgroupSize();
         explicitComputeSubgroupSizeConfigs->maxExplicitComputeSubgroupSize =
             GetMaxExplicitComputeSubgroupSize();
+        explicitComputeSubgroupSizeConfigs->maxComputeWorkgroupSubgroups =
+            GetMaxComputeWorkgroupSubgroups();
     }
 }
 

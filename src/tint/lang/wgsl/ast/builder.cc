@@ -26,6 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "src/tint/lang/wgsl/ast/builder.h"
+#include "src/tint/lang/core/enums.h"
 
 using namespace tint::core::number_suffixes;  // NOLINT
 
@@ -349,6 +350,10 @@ ast::Type Builder::TypesBuilder::array(const Source& source) const {
     return AsType(source, "array");
 }
 
+ast::Type Builder::TypesBuilder::array() const {
+    return array(builder->source_);
+}
+
 ast::Type Builder::TypesBuilder::array(ast::Type subtype) const {
     return array(builder->source_, subtype);
 }
@@ -359,6 +364,70 @@ ast::Type Builder::TypesBuilder::array(const Source& source, ast::Type subtype) 
                                                                 Vector{
                                                                     subtype.expr,
                                                                 }))};
+}
+
+ast::Type Builder::TypesBuilder::array(ast::Type subtype, uint32_t n) const {
+    return array(builder->source_, subtype, core::u32(n));
+}
+
+ast::Type Builder::TypesBuilder::array(ast::Type subtype, const ast::Const* expr) const {
+    return array(builder->source_, subtype, expr);
+}
+
+ast::Type Builder::TypesBuilder::array(ast::Type subtype, const ast::Expression* expr) const {
+    return array(builder->source_, subtype, expr);
+}
+
+ast::Type Builder::TypesBuilder::array(ast::Type subtype, const ast::Override* expr) const {
+    return array(builder->source_, subtype, expr);
+}
+
+ast::Type Builder::TypesBuilder::array(const Source& source, ast::Type subtype, uint32_t n) const {
+    if (n == 0) {
+        return AsType(source, "array", subtype);
+    }
+    return AsType(source, "array", subtype, core::u32(n));
+}
+
+ast::Type Builder::TypesBuilder::array(const Source& source,
+                                       ast::Type subtype,
+                                       const ast::Const* expr) const {
+    if (expr == nullptr) {
+        return AsType(source, "array", subtype);
+    }
+    return AsType(source, "array", subtype, expr);
+}
+
+ast::Type Builder::TypesBuilder::array(const Source& source,
+                                       ast::Type subtype,
+                                       const ast::Expression* expr) const {
+    if (expr == nullptr) {
+        return AsType(source, "array", subtype);
+    }
+    return AsType(source, "array", subtype, expr);
+}
+
+ast::Type Builder::TypesBuilder::array(const Source& source,
+                                       ast::Type subtype,
+                                       const ast::Override* expr) const {
+    if (expr == nullptr) {
+        return AsType(source, "array", subtype);
+    }
+    return AsType(source, "array", subtype, expr);
+}
+
+const ast::Alias* Builder::TypesBuilder::alias(std::string_view name, ast::Type type) const {
+    return alias(builder->source_, builder->Ident(name), type);
+}
+
+const ast::Alias* Builder::TypesBuilder::alias(Symbol name, ast::Type type) const {
+    return alias(builder->source_, builder->Ident(name), type);
+}
+
+const ast::Alias* Builder::TypesBuilder::alias(const Source& source,
+                                               const ast::Identifier* name,
+                                               ast::Type type) const {
+    return builder->create<ast::Alias>(source, builder->Ident(name), type);
 }
 
 ast::Type Builder::TypesBuilder::ptr(core::AddressSpace address_space,
@@ -389,6 +458,10 @@ ast::Type Builder::TypesBuilder::sampler(core::type::SamplerKind kind) const {
     return sampler(builder->source_, kind);
 }
 
+ast::Type Builder::TypesBuilder::sampler(core::SamplerFiltering filtering) const {
+    return sampler(builder->source_, filtering);
+}
+
 ast::Type Builder::TypesBuilder::sampler(const Source& source, core::type::SamplerKind kind) const {
     switch (kind) {
         case core::type::SamplerKind::kSampler:
@@ -397,6 +470,14 @@ ast::Type Builder::TypesBuilder::sampler(const Source& source, core::type::Sampl
             return AsType(source, "sampler_comparison");
     }
     TINT_ICE() << "invalid sampler kind " << kind;
+}
+
+ast::Type Builder::TypesBuilder::sampler(const Source& source,
+                                         core::SamplerFiltering filtering) const {
+    TINT_ASSERT(filtering == core::SamplerFiltering::kFiltering ||
+                filtering == core::SamplerFiltering::kNonFiltering);
+
+    return AsType(source, "sampler", filtering);
 }
 
 ast::Type Builder::TypesBuilder::depth_texture(core::type::TextureDimension dims) const {
@@ -439,6 +520,12 @@ ast::Type Builder::TypesBuilder::sampled_texture(core::type::TextureDimension di
     return sampled_texture(builder->source_, dims, subtype);
 }
 
+ast::Type Builder::TypesBuilder::sampled_texture(core::type::TextureDimension dims,
+                                                 ast::Type subtype,
+                                                 core::TextureFilterable filterable) const {
+    return sampled_texture(builder->source_, dims, subtype, filterable);
+}
+
 ast::Type Builder::TypesBuilder::sampled_texture(const Source& source,
                                                  core::type::TextureDimension dims,
                                                  ast::Type subtype) const {
@@ -455,6 +542,32 @@ ast::Type Builder::TypesBuilder::sampled_texture(const Source& source,
             return AsType(source, "texture_cube", subtype);
         case core::type::TextureDimension::kCubeArray:
             return AsType(source, "texture_cube_array", subtype);
+        default:
+            break;
+    }
+    TINT_ICE() << "invalid sampled_texture dimensions: " << dims;
+}
+
+ast::Type Builder::TypesBuilder::sampled_texture(const Source& source,
+                                                 core::type::TextureDimension dims,
+                                                 ast::Type subtype,
+                                                 core::TextureFilterable filterable) const {
+    TINT_ASSERT(filterable == core::TextureFilterable::kFilterable ||
+                filterable == core::TextureFilterable::kUnfilterable);
+
+    switch (dims) {
+        case core::type::TextureDimension::k1d:
+            return AsType(source, "texture_1d", subtype, filterable);
+        case core::type::TextureDimension::k2d:
+            return AsType(source, "texture_2d", subtype, filterable);
+        case core::type::TextureDimension::k3d:
+            return AsType(source, "texture_3d", subtype, filterable);
+        case core::type::TextureDimension::k2dArray:
+            return AsType(source, "texture_2d_array", subtype, filterable);
+        case core::type::TextureDimension::kCube:
+            return AsType(source, "texture_cube", subtype, filterable);
+        case core::type::TextureDimension::kCubeArray:
+            return AsType(source, "texture_cube_array", subtype, filterable);
         default:
             break;
     }

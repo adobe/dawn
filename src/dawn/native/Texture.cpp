@@ -713,6 +713,8 @@ wgpu::ComponentSwizzle ComposeSwizzleComponent(wgpu::TextureComponentSwizzle swi
             return swizzle.a;
         case wgpu::ComponentSwizzle::Undefined:
             return wgpu::ComponentSwizzle::Undefined;
+        default:
+            DAWN_UNREACHABLE();
     }
 }
 
@@ -1501,10 +1503,6 @@ TextureViewBase* TextureBase::APICreateView(const TextureViewDescriptor* descrip
 
 TextureViewBase* TextureBase::APICreateErrorView(const TextureViewDescriptor* descriptor) {
     return ReturnToAPI(CreateErrorView(descriptor));
-}
-
-bool TextureBase::IsImplicitMSAARenderTextureViewSupported() const {
-    return GetUsage() & wgpu::TextureUsage::TextureBinding;
 }
 
 void TextureBase::SetSharedResourceMemoryContentsForTesting(

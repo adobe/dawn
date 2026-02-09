@@ -1203,14 +1203,19 @@ fn main(@builtin(subgroup_invocation_id) sg_id : u32,
     }
 };
 
-// Test total invocations per workgroup should be a multiple of subgroup size when the
+// Test the X-dimension of the work group size must be a multiple of subgroup size when the
 // `@subgroup_size` attribute is used.
 TEST_F(SubgroupSizeControlValidationTest, ValidateTotalInvocationsPerWorkgroupAndSubgroupSize) {
     TestTotalInvocationsPerWorkgroupAndSubgroupSize({32}, 16, true);
-    TestTotalInvocationsPerWorkgroupAndSubgroupSize({8, 4}, 16, true);
-    TestTotalInvocationsPerWorkgroupAndSubgroupSize({8, 4, 2}, 32, true);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({16, 4}, 16, true);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({16, 4, 2}, 16, true);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({4, 16}, 16, false);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({4, 2, 16}, 16, false);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({8, 4}, 16, false);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({8, 4, 2}, 32, false);
     TestTotalInvocationsPerWorkgroupAndSubgroupSize({24}, 16, false);
     TestTotalInvocationsPerWorkgroupAndSubgroupSize({8, 3, 2}, 32, false);
+    TestTotalInvocationsPerWorkgroupAndSubgroupSize({32}, 32, true);
 }
 
 // Test it is a validation error to use a `@subgroup_size` that is greater than
@@ -1229,6 +1234,33 @@ TEST_F(SubgroupSizeControlValidationTest, ValidateExplicitComputeSubgroupSizes) 
         bool success = subgroupSize >= subgroupSizeConfigs.minExplicitComputeSubgroupSize &&
                        subgroupSize <= subgroupSizeConfigs.maxExplicitComputeSubgroupSize;
         TestTotalInvocationsPerWorkgroupAndSubgroupSize({subgroupSize}, subgroupSize, success);
+    }
+}
+
+// Test it is a validation error to use a `@subgroup_size` that makes the total invocations per
+// workgroup exceed the product of `@subgroup_size` and `maxComputeWorkgroupSubgroups` on current
+// adapter.
+TEST_F(SubgroupSizeControlValidationTest, ValidateMaxComputeWorkgroupSubgroups) {
+    wgpu::AdapterInfo info;
+    wgpu::AdapterPropertiesExplicitComputeSubgroupSizeConfigs subgroupSizeConfigs;
+    info.nextInChain = &subgroupSizeConfigs;
+    adapter.GetInfo(&info);
+    wgpu::Limits limits;
+    adapter.GetLimits(&limits);
+
+    uint32_t maxWorkgroupSubgroups = subgroupSizeConfigs.maxComputeWorkgroupSubgroups;
+    uint32_t maxInvocationsPerWorkgroup = limits.maxComputeInvocationsPerWorkgroup;
+
+    for (uint32_t subgroupSize = subgroupSizeConfigs.minExplicitComputeSubgroupSize;
+         subgroupSize <= subgroupSizeConfigs.maxExplicitComputeSubgroupSize; subgroupSize *= 2) {
+        ASSERT_TRUE(IsPowerOfTwo(subgroupSize));
+        uint32_t totalInvocations = maxInvocationsPerWorkgroup;
+        uint32_t workgroupSizeX = subgroupSize;
+        uint32_t workgroupSizeY = totalInvocations / workgroupSizeX;
+        ASSERT_LE(workgroupSizeY, limits.maxComputeWorkgroupSizeY);
+        bool success = maxInvocationsPerWorkgroup <= subgroupSize * maxWorkgroupSubgroups;
+        TestTotalInvocationsPerWorkgroupAndSubgroupSize({workgroupSizeX, workgroupSizeY},
+                                                        subgroupSize, success);
     }
 }
 
