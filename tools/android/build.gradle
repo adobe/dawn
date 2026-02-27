@@ -26,6 +26,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 plugins {
-    id 'com.android.library' version '8.7.1' apply false
-    id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+    // Adobe-Premiere-Android: upgraded from 8.7.1 to 9.0.0 to match the app's AGP version.
+    // Gradle composite builds forbid mixing AGP versions in the same build.
+    id 'com.android.library' version '9.0.0' apply false
+    // Adobe-Premiere-Android: removed 'org.jetbrains.kotlin.android' plugin.
+    // AGP 9.0 has built-in Kotlin support and rejects the standalone plugin.
 }
