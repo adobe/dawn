@@ -25,14 +25,15 @@ import java.nio.ByteBuffer
 /**
  * Blits a YCbCr HardwareBuffer to an existing RGBA8Unorm texture.
  * The destination texture must be created with RenderAttachment usage.
- * 
- * @param device The GPU device
+ * This is using the wgpu device that was created by initializeCache
+ *
  * @param hardwareBuffer The source HardwareBuffer (typically YCbCr format from video/camera)
  * @param destTexture The destination texture to write to (must be RGBA8Unorm with RenderAttachment usage)
  * @return true on success, false on failure
  */
-public external fun blitHardwareBufferToTexture(device: GPUDevice, hardwareBuffer: HardwareBuffer, destTexture: GPUTexture): Boolean
-
+public external fun blitHardwareBufferToTexture(hardwareBuffer: HardwareBuffer, destTexture: GPUTexture): Boolean
+public external fun initializeCache(device: GPUDevice): Boolean
+public external fun destroyCache(device: GPUDevice)
 public fun Bitmap.createGpuTexture(device: GPUDevice): GPUTexture {
     val size = GPUExtent3D(width = width, height = height)
     return device.createTexture(
