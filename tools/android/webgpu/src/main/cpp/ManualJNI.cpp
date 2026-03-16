@@ -13,34 +13,296 @@
 
 namespace {
     const char* kLogTag = "DawnManualJNI";
+
+    class WGPUCache final
+    {
+    public:
+        WGPUCache(const wgpu::Device& device)
+        : _device(device)
+        {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Initializing WGPUCache");
+        }
+
+        bool init()
+        {
+            // Check if the device has the required feature enabled.
+            // Also check backend type
+            wgpu::Adapter adapter = _device.GetAdapter();
+            if (!adapter) {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Could not get adapter from device!");
+                return false;
+            }
+
+            wgpu::AdapterInfo info;
+            adapter.GetInfo(&info);
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "Device Backend: %d (Vulkan=%d, GLES=%d)",
+                                info.backendType, WGPUBackendType_Vulkan, WGPUBackendType_OpenGLES);
+
+            bool hasRequiredFeatures = true;
+            if (!_device.HasFeature(wgpu::FeatureName::SharedTextureMemoryAHardwareBuffer)) {
+                hasRequiredFeatures = false;
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature SharedTextureMemoryAHardwareBuffer enabled!");
+            }
+            if (!_device.HasFeature(wgpu::FeatureName::YCbCrVulkanSamplers)) {
+                hasRequiredFeatures = false;
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature YCbCrVulkanSamplers enabled!");
+            }
+            if (!_device.HasFeature(wgpu::FeatureName::StaticSamplers)) {
+                hasRequiredFeatures = false;
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature StaticSamplers enabled!");
+            }
+            if (!_device.HasFeature(wgpu::FeatureName::SharedFenceSyncFD)) {
+                hasRequiredFeatures = false;
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature SharedFenceSyncFD enabled!");
+            }
+
+            if(!hasRequiredFeatures) {
+                // Log available features to help debug
+                wgpu::SupportedFeatures supportedFeatures;
+                _device.GetFeatures(&supportedFeatures);
+
+                __android_log_print(ANDROID_LOG_INFO, kLogTag, "Device has %zu enabled features:", supportedFeatures.featureCount);
+                for (size_t i = 0; i < supportedFeatures.featureCount; ++i) {
+                    __android_log_print(ANDROID_LOG_INFO, kLogTag, " - Feature: 0x%X", supportedFeatures.features[i]);
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+
+        ~WGPUCache()
+        {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Destroying WGPUCache");
+        }
+
+        const wgpu::Device& device() const
+        {
+            return _device;
+        }
+
+        wgpu::Sampler getOrCreateSampler(const wgpu::YCbCrVkDescriptor& yCbCrInfo)
+        {
+            if (_sampler) {
+                return _sampler;
+            }
+
+            _yCbCrInfo = yCbCrInfo;
+            _yCbCrInfo.nextInChain = nullptr;
+
+            wgpu::SamplerDescriptor samplerDesc = {};
+            samplerDesc.nextInChain = &_yCbCrInfo;
+
+            _sampler = _device.CreateSampler(&samplerDesc);
+            if (_sampler) {
+                __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created YCbCr sampler: %p", _sampler.Get());
+            } else {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create YCbCr sampler");
+            }
+
+            return _sampler;
+        }
+
+        wgpu::BindGroupLayout getOrCreateBindGroupLayout()
+        {
+            if (_bindGroupLayout) {
+                return _bindGroupLayout;
+            }
+
+            if (!_sampler) {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Cannot create BindGroupLayout: sampler not created yet");
+                return nullptr;
+            }
+
+            std::vector<wgpu::BindGroupLayoutEntry> entries(2);
+
+            wgpu::StaticSamplerBindingLayout staticSamplerBinding = {};
+            staticSamplerBinding.sampler = _sampler;
+            staticSamplerBinding.sampledTextureBinding = 1;
+
+            // Binding 0: Static sampler (visible to fragment shader)
+            entries[0].binding = 0;
+            entries[0].visibility = wgpu::ShaderStage::Fragment;
+            entries[0].nextInChain = &staticSamplerBinding;
+
+            // Binding 1: Texture (visible to fragment shader)
+            entries[1].binding = 1;
+            entries[1].visibility = wgpu::ShaderStage::Fragment;
+            entries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+            entries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+            entries[1].texture.multisampled = false;
+
+            wgpu::BindGroupLayoutDescriptor layoutDesc = {};
+            layoutDesc.entryCount = entries.size();
+            layoutDesc.entries = entries.data();
+
+            _bindGroupLayout = _device.CreateBindGroupLayout(&layoutDesc);
+            if (_bindGroupLayout) {
+                __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created BindGroupLayout: %p", _bindGroupLayout.Get());
+            } else {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create BindGroupLayout");
+            }
+
+            return _bindGroupLayout;
+        }
+
+        wgpu::RenderPipeline getOrCreatePipeline()
+        {
+            if (_pipeline) {
+                return _pipeline;
+            }
+
+            wgpu::BindGroupLayout bindGroupLayout = getOrCreateBindGroupLayout();
+            if (!bindGroupLayout) {
+                return nullptr;
+            }
+
+            const char* blitShaderSource = R"(
+                @group(0) @binding(0) var mySampler : sampler;
+                @group(0) @binding(1) var myTexture : texture_2d<f32>;
+
+                struct VertexOutput {
+                    @builtin(position) position : vec4f,
+                    @location(0) texCoord : vec2f,
+                }
+
+                @vertex
+                fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput {
+                    var pos = array<vec2f, 3>(
+                        vec2f(-1.0, -1.0),
+                        vec2f( 3.0, -1.0),
+                        vec2f(-1.0,  3.0)
+                    );
+                    var uv = array<vec2f, 3>(
+                        vec2f(0.0, 1.0),
+                        vec2f(2.0, 1.0),
+                        vec2f(0.0, -1.0)
+                    );
+                    var output : VertexOutput;
+                    output.position = vec4f(pos[vertexIndex], 0.0, 1.0);
+                    output.texCoord = uv[vertexIndex];
+                    return output;
+                }
+
+                @fragment
+                fn fs_main(@location(0) texCoord : vec2f) -> @location(0) vec4f {
+                    return textureSample(myTexture, mySampler, texCoord);
+                }
+            )";
+
+            wgpu::ShaderSourceWGSL wgslDesc;
+            wgslDesc.code = blitShaderSource;
+            wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
+            shaderModuleDesc.nextInChain = &wgslDesc;
+            wgpu::ShaderModule shaderModule = _device.CreateShaderModule(&shaderModuleDesc);
+            if (!shaderModule) {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create shader module");
+                return nullptr;
+            }
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created shader module: %p", shaderModule.Get());
+
+            wgpu::PipelineLayoutDescriptor pipelineLayoutDesc = {};
+            pipelineLayoutDesc.bindGroupLayoutCount = 1;
+            pipelineLayoutDesc.bindGroupLayouts = &bindGroupLayout;
+            wgpu::PipelineLayout pipelineLayout = _device.CreatePipelineLayout(&pipelineLayoutDesc);
+            if (!pipelineLayout) {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create pipeline layout");
+                return nullptr;
+            }
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created pipeline layout: %p", pipelineLayout.Get());
+
+            wgpu::ColorTargetState colorTarget = {};
+            colorTarget.format = wgpu::TextureFormat::RGBA8Unorm;
+            colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+            wgpu::FragmentState fragmentState = {};
+            fragmentState.module = shaderModule;
+            fragmentState.entryPoint = "fs_main";
+            fragmentState.targetCount = 1;
+            fragmentState.targets = &colorTarget;
+
+            wgpu::RenderPipelineDescriptor pipelineDesc = {};
+            pipelineDesc.layout = pipelineLayout;
+            pipelineDesc.vertex.module = shaderModule;
+            pipelineDesc.vertex.entryPoint = "vs_main";
+            pipelineDesc.fragment = &fragmentState;
+            pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+            pipelineDesc.multisample.count = 1;
+            pipelineDesc.multisample.mask = 0xFFFFFFFF;
+
+            _pipeline = _device.CreateRenderPipeline(&pipelineDesc);
+            if (_pipeline) {
+                __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created render pipeline: %p", _pipeline.Get());
+            } else {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create render pipeline");
+            }
+
+            return _pipeline;
+        }
+
+    private:
+        const wgpu::Device _device;
+        wgpu::YCbCrVkDescriptor _yCbCrInfo = {};
+        wgpu::Sampler _sampler;
+        wgpu::BindGroupLayout _bindGroupLayout;
+        wgpu::RenderPipeline _pipeline;
+    };
+
+    std::unique_ptr<WGPUCache> s_WGPUCache;
 }
 
 extern "C" {
 
+    //public external fun initializeCache(device: GPUDevice)
+JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_initializeCache(
+JNIEnv* env, jclass clazz, jobject deviceObj) {
+
+    // Get the native WGPUDevice from the Kotlin object
+    jclass deviceClass = env->GetObjectClass(deviceObj);
+    if (deviceClass == nullptr) {
+        return false;
+    }
+
+    jmethodID getHandleMethod = env->GetMethodID(deviceClass, "getHandle", "()J");
+    if (getHandleMethod == nullptr) {
+        return false;
+    }
+
+    jlong deviceHandle = env->CallLongMethod(deviceObj, getHandleMethod);
+    WGPUDevice rawDevice = reinterpret_cast<WGPUDevice>(deviceHandle);
+    wgpu::Device device(rawDevice);
+
+    s_WGPUCache = std::make_unique<WGPUCache>(device);
+    if (!s_WGPUCache->init())
+    {
+        s_WGPUCache.reset();
+    }
+
+    return true;
+}
+
+JNIEXPORT void JNICALL Java_androidx_webgpu_helper_TexturesUtils_destroyCache(
+JNIEnv* env, jclass clazz, jobject deviceObj) {
+    s_WGPUCache.release();
+}
+
 JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwareBufferToTexture(
-    JNIEnv* env, jclass clazz, jobject deviceObj, jobject hardwareBufferObj, jobject destTextureObj) {
-    
-    if (hardwareBufferObj == nullptr) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "HardwareBuffer object is null");
+    JNIEnv* env, jclass clazz, jobject hardwareBufferObj, jobject destTextureObj) {
+
+    if (s_WGPUCache == nullptr) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "WGPU cache not initialized");
         return JNI_FALSE;
     }
 
-    if (deviceObj == nullptr) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device object is null");
+    if (hardwareBufferObj == nullptr) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "HardwareBuffer object is null");
         return JNI_FALSE;
     }
 
     if (destTextureObj == nullptr) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Destination texture object is null");
         return JNI_FALSE;
-    }
-
-    // Get the native WGPUDevice from the Kotlin object
-    jclass deviceClass = env->GetObjectClass(deviceObj);
-    jmethodID getHandleMethod = env->GetMethodID(deviceClass, "getHandle", "()J");
-    if (getHandleMethod == nullptr) {
-         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Could not find getHandle method on GPUDevice");
-         return JNI_FALSE;
     }
 
     // Get the native WGPUTexture from the destination texture object
@@ -51,15 +313,7 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
         return JNI_FALSE;
     }
 
-    jlong deviceHandle = env->CallLongMethod(deviceObj, getHandleMethod);
     jlong destTextureHandle = env->CallLongMethod(destTextureObj, getTextureHandleMethod);
-    WGPUDevice rawDevice = reinterpret_cast<WGPUDevice>(deviceHandle);
-    wgpu::Device device(rawDevice);
-    if (!device) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create device from handle");
-        return JNI_FALSE;
-    }
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created device from handle: %p", device.Get());
 
     // Wrap the destination texture handle (don't take ownership - Kotlin owns it)
     WGPUTexture rawDestTexture = reinterpret_cast<WGPUTexture>(destTextureHandle);
@@ -69,49 +323,6 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
         return JNI_FALSE;
     }
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "Using destination texture: %p", destTexture.Get());
-    
-    // Check if the device has the required feature enabled.
-    // Also check backend type
-    wgpu::Adapter adapter = device.GetAdapter();
-    if (!adapter) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Could not get adapter from device!");
-        return JNI_FALSE;        
-    }    
-
-    wgpu::AdapterInfo info;
-    adapter.GetInfo(&info);
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Device Backend: %d (Vulkan=%d, GLES=%d)", 
-        info.backendType, WGPUBackendType_Vulkan, WGPUBackendType_OpenGLES);
-
-    bool hasRequiredFeatures = true;
-    if (!device.HasFeature(wgpu::FeatureName::SharedTextureMemoryAHardwareBuffer)) {
-        hasRequiredFeatures = false;
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature SharedTextureMemoryAHardwareBuffer enabled!");
-    }
-    if (!device.HasFeature(wgpu::FeatureName::YCbCrVulkanSamplers)) {
-        hasRequiredFeatures = false;
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature YCbCrVulkanSamplers enabled!");
-    }
-    if (!device.HasFeature(wgpu::FeatureName::StaticSamplers)) {
-        hasRequiredFeatures = false;
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature StaticSamplers enabled!");
-    }
-    if (!device.HasFeature(wgpu::FeatureName::SharedFenceSyncFD)) {
-        hasRequiredFeatures = false;
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Device does NOT have feature SharedFenceSyncFD enabled!");
-    }
-
-    if(!hasRequiredFeatures) {
-        // Log available features to help debug
-        wgpu::SupportedFeatures supportedFeatures;
-        device.GetFeatures(&supportedFeatures);
-        
-        __android_log_print(ANDROID_LOG_INFO, kLogTag, "Device has %zu enabled features:", supportedFeatures.featureCount);
-        for (size_t i = 0; i < supportedFeatures.featureCount; ++i) {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag, " - Feature: 0x%X", supportedFeatures.features[i]);
-        }
-        return JNI_FALSE;
-   }
 
     AHardwareBuffer* buffer = AHardwareBuffer_fromHardwareBuffer(env, hardwareBufferObj);
     if (buffer == nullptr) {
@@ -140,6 +351,8 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
     cStmDesc.nextInChain = &stmAHardwareBufferDesc;
     cStmDesc.label = { "ManualJNI_SharedTextureMemory", WGPU_STRLEN };
 
+    const auto& device = s_WGPUCache->device();
+
     wgpu::SharedTextureMemory memory = device.ImportSharedTextureMemory(&cStmDesc);
         
     if (!memory) {
@@ -161,66 +374,16 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
          __android_log_print(ANDROID_LOG_ERROR, kLogTag, "SharedTextureMemory has Undefined format. Import likely failed internally. Aborting.");
          return JNI_FALSE;
     }
-    wgpu::SamplerDescriptor samplerDesc = {};
-    samplerDesc.nextInChain = &ahbProperties.yCbCrInfo;
-    
-    wgpu::Sampler yCbCrSampler = device.CreateSampler(&samplerDesc);    
-    if(!yCbCrSampler) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create YCbCr sampler");
+    wgpu::Sampler yCbCrSampler = s_WGPUCache->getOrCreateSampler(ahbProperties.yCbCrInfo);
+    if (!yCbCrSampler) {
         return JNI_FALSE;
     }
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created YCbCr sampler: %p", yCbCrSampler.Get());
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "  YCbCr Info: vkFormat=%u, externalFormat=%llu",
-        ahbProperties.yCbCrInfo.vkFormat,
-        (unsigned long long)ahbProperties.yCbCrInfo.externalFormat);
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "  YCbCr Model=%u, Range=%u, ChromaFilter=%d",
-        ahbProperties.yCbCrInfo.vkYCbCrModel,
-        ahbProperties.yCbCrInfo.vkYCbCrRange,
-        static_cast<int>(ahbProperties.yCbCrInfo.vkChromaFilter));
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "  Chroma Offset: X=%u, Y=%u",
-        ahbProperties.yCbCrInfo.vkXChromaOffset,
-        ahbProperties.yCbCrInfo.vkYChromaOffset);
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "  Component Swizzle: R=%u, G=%u, B=%u, A=%u",
-        ahbProperties.yCbCrInfo.vkComponentSwizzleRed,
-        ahbProperties.yCbCrInfo.vkComponentSwizzleGreen,
-        ahbProperties.yCbCrInfo.vkComponentSwizzleBlue,
-        ahbProperties.yCbCrInfo.vkComponentSwizzleAlpha);
-    
-    // Create BindGroupLayout
-    // For YCbCr, we use a static sampler with YCbCr descriptor.
-    // The shader uses texture_2d<f32> - the YCbCr conversion happens in the sampler.
-    // Note: For static samplers, the sampler is NOT passed in the bind group entries.
-    // Instead, it's baked into the bind group layout.
-    std::vector<wgpu::BindGroupLayoutEntry> bindGroupLayoutEntries(2);
-    
-    wgpu::StaticSamplerBindingLayout staticSamplerBinding = {};
-    staticSamplerBinding.sampler = yCbCrSampler;
-    staticSamplerBinding.sampledTextureBinding = 1;
 
-    // Binding 0: Static sampler (visible to fragment shader)
-    bindGroupLayoutEntries[0].binding = 0;
-    bindGroupLayoutEntries[0].visibility = wgpu::ShaderStage::Fragment;
-    bindGroupLayoutEntries[0].nextInChain = &staticSamplerBinding;
-
-    // Binding 1: Texture (visible to fragment shader)
-    bindGroupLayoutEntries[1].binding = 1;
-    bindGroupLayoutEntries[1].visibility = wgpu::ShaderStage::Fragment;
-    bindGroupLayoutEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
-    bindGroupLayoutEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
-    bindGroupLayoutEntries[1].texture.multisampled = false;
-
-    wgpu::BindGroupLayoutDescriptor layoutDesc = {};
-    layoutDesc.entryCount = bindGroupLayoutEntries.size();
-    layoutDesc.entries = bindGroupLayoutEntries.data();
-
-    wgpu::BindGroupLayout bindGroupLayout = device.CreateBindGroupLayout(&layoutDesc);
-    if(!bindGroupLayout) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create BindGroupLayout");
+    wgpu::RenderPipeline pipeline = s_WGPUCache->getOrCreatePipeline();
+    if (!pipeline) {
         return JNI_FALSE;
     }
-    
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created BindGroupLayout: %p", bindGroupLayout.Get());
-    
+    wgpu::BindGroupLayout bindGroupLayout = s_WGPUCache->getOrCreateBindGroupLayout();
 
     // Create Texture to hold the YCbCr data
     wgpu::TextureDescriptor descriptor = {};
@@ -297,92 +460,6 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
     }
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created BindGroup: %p", bindGroup.Get());
     
-
-    // --- Create Shader Module for YCbCr blit ---
-    // With static samplers, the sampler is declared in WGSL but bound via the layout.
-    // The YCbCr conversion happens automatically in the sampler.
-    const char* blitShaderSource = R"(
-        @group(0) @binding(0) var mySampler : sampler;
-        @group(0) @binding(1) var myTexture : texture_2d<f32>;
-
-        struct VertexOutput {
-            @builtin(position) position : vec4f,
-            @location(0) texCoord : vec2f,
-        }
-
-        @vertex
-        fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput {
-            // Full-screen triangle (3 vertices, no vertex buffer needed)
-            var pos = array<vec2f, 3>(
-                vec2f(-1.0, -1.0),
-                vec2f( 3.0, -1.0),
-                vec2f(-1.0,  3.0)
-            );
-            var uv = array<vec2f, 3>(
-                vec2f(0.0, 1.0),
-                vec2f(2.0, 1.0),
-                vec2f(0.0, -1.0)
-            );
-            var output : VertexOutput;
-            output.position = vec4f(pos[vertexIndex], 0.0, 1.0);
-            output.texCoord = uv[vertexIndex];
-            return output;
-        }
-
-        @fragment
-        fn fs_main(@location(0) texCoord : vec2f) -> @location(0) vec4f {
-            return textureSample(myTexture, mySampler, texCoord);
-        }
-    )";
-
-    wgpu::ShaderSourceWGSL wgslDesc;
-    wgslDesc.code = blitShaderSource;
-    wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
-    shaderModuleDesc.nextInChain = &wgslDesc;
-    wgpu::ShaderModule shaderModule = device.CreateShaderModule(&shaderModuleDesc);
-    if (!shaderModule) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create shader module");
-        return JNI_FALSE;
-    }
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created shader module: %p", shaderModule.Get());
-
-    // --- Create Pipeline Layout using our bind group layout ---
-    wgpu::PipelineLayoutDescriptor pipelineLayoutDesc = {};
-    pipelineLayoutDesc.bindGroupLayoutCount = 1;
-    pipelineLayoutDesc.bindGroupLayouts = &bindGroupLayout;
-    wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&pipelineLayoutDesc);
-    if (!pipelineLayout) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create pipeline layout");
-        return JNI_FALSE;
-    }
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created pipeline layout: %p", pipelineLayout.Get());
-
-    // --- Create Render Pipeline ---
-    wgpu::ColorTargetState colorTarget = {};
-    colorTarget.format = wgpu::TextureFormat::RGBA8Unorm;
-    colorTarget.writeMask = wgpu::ColorWriteMask::All;
-
-    wgpu::FragmentState fragmentState = {};
-    fragmentState.module = shaderModule;
-    fragmentState.entryPoint = "fs_main";
-    fragmentState.targetCount = 1;
-    fragmentState.targets = &colorTarget;
-
-    wgpu::RenderPipelineDescriptor pipelineDesc = {};
-    pipelineDesc.layout = pipelineLayout;
-    pipelineDesc.vertex.module = shaderModule;
-    pipelineDesc.vertex.entryPoint = "vs_main";
-    pipelineDesc.fragment = &fragmentState;
-    pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-    pipelineDesc.multisample.count = 1;
-    pipelineDesc.multisample.mask = 0xFFFFFFFF;
-
-    wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&pipelineDesc);
-    if (!pipeline) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create render pipeline");
-        return JNI_FALSE;
-    }
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created render pipeline: %p", pipeline.Get());
 
     // --- Execute the blit render pass ---
     // (BeginAccess was already called earlier, right after texture creation)
