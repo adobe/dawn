@@ -38,6 +38,11 @@ set(DAWN_BUILD_MONOLITHIC_LIBRARY STATIC)
 set(DAWN_DIR "${webgpu_SOURCE_DIR}/../../../../../..")
 add_subdirectory(${DAWN_DIR} dawn)
 
+# Export the C API symbols from webgpu_c_bundled so that consumers of the
+# prefab can link against them when using the C++ wrapper headers. Without this,
+# -fvisibility=hidden (set above) causes all Dawn symbols to be hidden.
+target_compile_definitions(webgpu_dawn_objects PUBLIC WGPU_SHARED_LIBRARY)
+
 list(INSERT CMAKE_MODULE_PATH 0 "${DAWN_DIR}/src/cmake")
 include(DawnCompilerChecks)
 
@@ -63,13 +68,67 @@ target_sources(webgpu_c_bundled PRIVATE
 target_include_directories(webgpu_c_bundled PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(webgpu_c_bundled PRIVATE android webgpu_dawn dawn_common dawn_internal_config)
 
-# Copy headers for webgpu_c_bundled over.
-add_custom_command(DEPENDS dawncpp_headers POST_BUILD
-                   OUTPUT ${CMAKE_SOURCE_DIR}/gen/include/dawn/webgpu.h
-                   COMMAND rm -r "${CMAKE_SOURCE_DIR}/gen" || echo
-                   COMMAND ${CMAKE_COMMAND} -E copy
-                           ${CMAKE_CURRENT_BINARY_DIR}/dawn/gen/include/dawn/webgpu.h
-                           ${CMAKE_SOURCE_DIR}/gen/include/dawn/webgpu.h)
+# Copy C and C++ headers into gen/include/ for the prefab package.
+# Generated headers live under ${CMAKE_CURRENT_BINARY_DIR}/dawn/gen/include/;
+# source-tree headers live under ${DAWN_DIR}/include/.
+set(PREFAB_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/gen/include")
+set(DAWN_GEN_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/dawn/gen/include")
+
+add_custom_command(
+    DEPENDS dawncpp_headers
+    OUTPUT
+        ${PREFAB_INCLUDE_DIR}/dawn/webgpu.h
+        ${PREFAB_INCLUDE_DIR}/dawn/webgpu_cpp.h
+        ${PREFAB_INCLUDE_DIR}/dawn/webgpu_cpp_print.h
+        ${PREFAB_INCLUDE_DIR}/webgpu/webgpu.h
+        ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp.h
+        ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp_print.h
+        ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp_chained_struct.h
+        ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_enum_class_bitmasks.h
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${PREFAB_INCLUDE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PREFAB_INCLUDE_DIR}/dawn"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PREFAB_INCLUDE_DIR}/webgpu"
+    # Generated C header
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_GEN_INCLUDE}/dawn/webgpu.h"
+            "${PREFAB_INCLUDE_DIR}/dawn/webgpu.h"
+    # Generated C++ headers
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_GEN_INCLUDE}/dawn/webgpu_cpp.h"
+            "${PREFAB_INCLUDE_DIR}/dawn/webgpu_cpp.h"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_GEN_INCLUDE}/dawn/webgpu_cpp_print.h"
+            "${PREFAB_INCLUDE_DIR}/dawn/webgpu_cpp_print.h"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_GEN_INCLUDE}/webgpu/webgpu_cpp_chained_struct.h"
+            "${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp_chained_struct.h"
+    # Source-tree forwarding/utility headers
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_DIR}/include/webgpu/webgpu.h"
+            "${PREFAB_INCLUDE_DIR}/webgpu/webgpu.h"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_DIR}/include/webgpu/webgpu_cpp.h"
+            "${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp.h"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_DIR}/include/webgpu/webgpu_cpp_print.h"
+            "${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp_print.h"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${DAWN_DIR}/include/webgpu/webgpu_enum_class_bitmasks.h"
+            "${PREFAB_INCLUDE_DIR}/webgpu/webgpu_enum_class_bitmasks.h"
+    COMMENT "Copying Dawn C/C++ headers for prefab packaging"
+)
+
+add_custom_target(copy_prefab_headers DEPENDS
+    ${PREFAB_INCLUDE_DIR}/dawn/webgpu.h
+    ${PREFAB_INCLUDE_DIR}/dawn/webgpu_cpp.h
+    ${PREFAB_INCLUDE_DIR}/dawn/webgpu_cpp_print.h
+    ${PREFAB_INCLUDE_DIR}/webgpu/webgpu.h
+    ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp.h
+    ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp_print.h
+    ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_cpp_chained_struct.h
+    ${PREFAB_INCLUDE_DIR}/webgpu/webgpu_enum_class_bitmasks.h
+)
+add_dependencies(webgpu_c_bundled copy_prefab_headers)
 
 # Add unit test build configuration
 # To run use the following command:
