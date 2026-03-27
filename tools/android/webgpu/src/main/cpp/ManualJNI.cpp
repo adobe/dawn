@@ -287,7 +287,7 @@ extern "C" {
         s_WGPUCache.release();
     }
 
-JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwareBufferToTexture(
+    JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwareBufferToTexture(
         JNIEnv* env, jclass clazz, jobject hardwareBufferObj, jobject destTextureObj) {
 
         if (s_WGPUCache == nullptr) {
@@ -546,6 +546,303 @@ JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitHardwar
         // The C++ wrapper will release its reference when going out of scope,
         // but since we didn't take ownership (just wrapped the handle), this is fine.
 
+        return JNI_TRUE;
+    }
+
+    /**
+     * Copy the contents of a texture to a destination hardware buffer
+     */
+    JNIEXPORT jboolean JNICALL Java_androidx_webgpu_helper_TexturesUtils_blitTextureToHardwareBuffer(
+        JNIEnv* env, jclass clazz, jobject sourceTextureObj, jobject hardwareBufferObj) {
+
+        if (s_WGPUCache == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "WGPU cache not initialized");
+            return JNI_FALSE;
+        }
+
+        if (sourceTextureObj == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Source texture object is null");
+            return JNI_FALSE;
+        }
+
+        if (hardwareBufferObj == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "HardwareBuffer object is null");
+            return JNI_FALSE;
+        }
+
+        jclass textureClass = env->GetObjectClass(sourceTextureObj);
+        jmethodID getTextureHandleMethod = env->GetMethodID(textureClass, "getHandle", "()J");
+        if (getTextureHandleMethod == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Could not find getHandle method on GPUTexture");
+            return JNI_FALSE;
+        }
+
+        jlong sourceTextureHandle = env->CallLongMethod(sourceTextureObj, getTextureHandleMethod);
+        WGPUTexture rawSourceTexture = reinterpret_cast<WGPUTexture>(sourceTextureHandle);
+        wgpu::Texture sourceTexture(rawSourceTexture);
+        if (!sourceTexture) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to get source texture from handle");
+            return JNI_FALSE;
+        }
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "Using source texture: %p", sourceTexture.Get());
+
+        AHardwareBuffer* buffer = AHardwareBuffer_fromHardwareBuffer(env, hardwareBufferObj);
+        if (buffer == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to acquire AHardwareBuffer from HardwareBuffer object");
+            return JNI_FALSE;
+        }
+
+        AHardwareBuffer_acquire(buffer);
+
+        AHardwareBuffer_Desc desc;
+        AHardwareBuffer_describe(buffer, &desc);
+
+        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            "Acquired destination AHardwareBuffer: %p. Width: %u, Height: %u, Layers: %u, Format: %u, Usage: %llu, Stride: %u",
+            buffer, desc.width, desc.height, desc.layers, desc.format, (unsigned long long)desc.usage, desc.stride);
+
+        wgpu::SharedTextureMemoryAHardwareBufferDescriptor stmAHardwareBufferDesc = {};
+        stmAHardwareBufferDesc.handle = buffer;
+
+        wgpu::SharedTextureMemoryDescriptor cStmDesc = {};
+        cStmDesc.nextInChain = &stmAHardwareBufferDesc;
+        cStmDesc.label = { "ManualJNI_SharedTextureMemory_WriteAHB", WGPU_STRLEN };
+
+        const auto& device = s_WGPUCache->device();
+        wgpu::SharedTextureMemory memory = device.ImportSharedTextureMemory(&cStmDesc);
+        if (!memory) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to import destination AHardwareBuffer");
+            AHardwareBuffer_release(buffer);
+            return JNI_FALSE;
+        }
+
+        wgpu::SharedTextureMemoryProperties properties = {};
+        memory.GetProperties(&properties);
+        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            "Destination SharedTextureMemory Properties: Format=%d, Usage=%lu, Size=%dx%d",
+            properties.format, (unsigned long)properties.usage, properties.size.width, properties.size.height);
+
+        if (properties.format == wgpu::TextureFormat::Undefined) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Destination SharedTextureMemory has Undefined format");
+            AHardwareBuffer_release(buffer);
+            return JNI_FALSE;
+        }
+
+        if ((properties.usage & wgpu::TextureUsage::RenderAttachment) == 0) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                "Destination HardwareBuffer is not renderable. Required usage bit: RenderAttachment, actual usage=%lu",
+                (unsigned long)properties.usage);
+            AHardwareBuffer_release(buffer);
+            return JNI_FALSE;
+        }
+
+        wgpu::Texture destTexture = memory.CreateTexture();
+        AHardwareBuffer_release(buffer);
+
+        if (!destTexture) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create destination texture from shared memory");
+            return JNI_FALSE;
+        }
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "Created destination AHB texture: %p", destTexture.Get());
+
+        wgpu::SharedTextureMemoryVkImageLayoutBeginState vkBeginState = {};
+        vkBeginState.oldLayout = 0; // VK_IMAGE_LAYOUT_UNDEFINED
+        vkBeginState.newLayout = 0; // VK_IMAGE_LAYOUT_UNDEFINED
+
+        wgpu::SharedTextureMemoryBeginAccessDescriptor beginAccessDesc = {};
+        beginAccessDesc.nextInChain = &vkBeginState;
+        beginAccessDesc.initialized = false;
+        beginAccessDesc.fenceCount = 0;
+
+        wgpu::Status status = memory.BeginAccess(destTexture, &beginAccessDesc);
+        if (status != wgpu::Status::Success) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to BeginAccess on destination AHB status=%d", (int)status);
+            return JNI_FALSE;
+        }
+
+        const char* blitToHardwareBufferShaderSource = R"(
+            @group(0) @binding(0) var srcSampler : sampler;
+            @group(0) @binding(1) var srcTexture : texture_2d<f32>;
+
+            struct VertexOutput {
+                @builtin(position) position : vec4f,
+                @location(0) texCoord : vec2f,
+            }
+
+            @vertex
+            fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput {
+                var pos = array<vec2f, 3>(
+                    vec2f(-1.0, -1.0),
+                    vec2f( 3.0, -1.0),
+                    vec2f(-1.0,  3.0)
+                );
+                var uv = array<vec2f, 3>(
+                    vec2f(0.0, 1.0),
+                    vec2f(2.0, 1.0),
+                    vec2f(0.0, -1.0)
+                );
+                var output : VertexOutput;
+                output.position = vec4f(pos[vertexIndex], 0.0, 1.0);
+                output.texCoord = uv[vertexIndex];
+                return output;
+            }
+
+            @fragment
+            fn fs_main(@location(0) texCoord : vec2f) -> @location(0) vec4f {
+                return textureSample(srcTexture, srcSampler, texCoord);
+            }
+        )";
+
+        wgpu::ShaderSourceWGSL wgslDesc;
+        wgslDesc.code = blitToHardwareBufferShaderSource;
+        wgpu::ShaderModuleDescriptor shaderModuleDesc = {};
+        shaderModuleDesc.nextInChain = &wgslDesc;
+        wgpu::ShaderModule shaderModule = device.CreateShaderModule(&shaderModuleDesc);
+        if (!shaderModule) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create shader module for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        wgpu::SamplerDescriptor samplerDesc = {};
+        samplerDesc.minFilter = wgpu::FilterMode::Linear;
+        samplerDesc.magFilter = wgpu::FilterMode::Linear;
+        samplerDesc.mipmapFilter = wgpu::MipmapFilterMode::Linear;
+        samplerDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
+        samplerDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
+        samplerDesc.addressModeW = wgpu::AddressMode::ClampToEdge;
+        wgpu::Sampler sampler = device.CreateSampler(&samplerDesc);
+        if (!sampler) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create sampler for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        std::vector<wgpu::BindGroupLayoutEntry> layoutEntries(2);
+        layoutEntries[0].binding = 0;
+        layoutEntries[0].visibility = wgpu::ShaderStage::Fragment;
+        layoutEntries[0].sampler.type = wgpu::SamplerBindingType::Filtering;
+        layoutEntries[1].binding = 1;
+        layoutEntries[1].visibility = wgpu::ShaderStage::Fragment;
+        layoutEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+        layoutEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+        layoutEntries[1].texture.multisampled = false;
+
+        wgpu::BindGroupLayoutDescriptor bindGroupLayoutDesc = {};
+        bindGroupLayoutDesc.entryCount = layoutEntries.size();
+        bindGroupLayoutDesc.entries = layoutEntries.data();
+        wgpu::BindGroupLayout bindGroupLayout = device.CreateBindGroupLayout(&bindGroupLayoutDesc);
+        if (!bindGroupLayout) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create bind group layout for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        wgpu::PipelineLayoutDescriptor pipelineLayoutDesc = {};
+        pipelineLayoutDesc.bindGroupLayoutCount = 1;
+        pipelineLayoutDesc.bindGroupLayouts = &bindGroupLayout;
+        wgpu::PipelineLayout pipelineLayout = device.CreatePipelineLayout(&pipelineLayoutDesc);
+        if (!pipelineLayout) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create pipeline layout for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        wgpu::ColorTargetState colorTarget = {};
+        colorTarget.format = properties.format;
+        colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+        wgpu::FragmentState fragmentState = {};
+        fragmentState.module = shaderModule;
+        fragmentState.entryPoint = "fs_main";
+        fragmentState.targetCount = 1;
+        fragmentState.targets = &colorTarget;
+
+        wgpu::RenderPipelineDescriptor pipelineDesc = {};
+        pipelineDesc.layout = pipelineLayout;
+        pipelineDesc.vertex.module = shaderModule;
+        pipelineDesc.vertex.entryPoint = "vs_main";
+        pipelineDesc.fragment = &fragmentState;
+        pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        pipelineDesc.multisample.count = 1;
+        pipelineDesc.multisample.mask = 0xFFFFFFFF;
+
+        wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&pipelineDesc);
+        if (!pipeline) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create render pipeline for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        wgpu::TextureView sourceView = sourceTexture.CreateView();
+        if (!sourceView) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create source texture view");
+            return JNI_FALSE;
+        }
+
+        wgpu::TextureView destView = destTexture.CreateView();
+        if (!destView) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create destination AHB texture view");
+            return JNI_FALSE;
+        }
+
+        std::vector<wgpu::BindGroupEntry> bindGroupEntries(2);
+        bindGroupEntries[0].binding = 0;
+        bindGroupEntries[0].sampler = sampler;
+        bindGroupEntries[1].binding = 1;
+        bindGroupEntries[1].textureView = sourceView;
+
+        wgpu::BindGroupDescriptor bindGroupDesc = {};
+        bindGroupDesc.layout = bindGroupLayout;
+        bindGroupDesc.entryCount = bindGroupEntries.size();
+        bindGroupDesc.entries = bindGroupEntries.data();
+        wgpu::BindGroup bindGroup = device.CreateBindGroup(&bindGroupDesc);
+        if (!bindGroup) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create bind group for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        wgpu::RenderPassColorAttachment colorAttachment = {};
+        colorAttachment.view = destView;
+        colorAttachment.loadOp = wgpu::LoadOp::Clear;
+        colorAttachment.storeOp = wgpu::StoreOp::Store;
+        colorAttachment.clearValue = {0.0, 0.0, 0.0, 1.0};
+
+        wgpu::RenderPassDescriptor renderPassDesc = {};
+        renderPassDesc.colorAttachmentCount = 1;
+        renderPassDesc.colorAttachments = &colorAttachment;
+
+        wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+        if (!encoder) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to create command encoder for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPassDesc);
+        if (!pass) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to begin render pass for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        pass.SetPipeline(pipeline);
+        pass.SetBindGroup(0, bindGroup);
+        pass.Draw(3);
+        pass.End();
+
+        wgpu::CommandBuffer commands = encoder.Finish();
+        if (!commands) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to finish command buffer for texture->AHB blit");
+            return JNI_FALSE;
+        }
+
+        device.GetQueue().Submit(1, &commands);
+
+        wgpu::SharedTextureMemoryVkImageLayoutEndState vkEndState = {};
+        wgpu::SharedTextureMemoryEndAccessState endAccessState = {};
+        endAccessState.nextInChain = &vkEndState;
+
+        status = memory.EndAccess(destTexture, &endAccessState);
+        if (status != wgpu::Status::Success) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to EndAccess on destination AHB status=%d", (int)status);
+            return JNI_FALSE;
+        }
+
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "Texture->HardwareBuffer blit complete!");
         return JNI_TRUE;
     }
 

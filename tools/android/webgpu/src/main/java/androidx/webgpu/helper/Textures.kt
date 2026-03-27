@@ -32,6 +32,17 @@ import java.nio.ByteBuffer
  * @return true on success, false on failure
  */
 public external fun blitHardwareBufferToTexture(hardwareBuffer: HardwareBuffer, destTexture: GPUTexture): Boolean
+
+/**
+ * Blits an existing GPU texture into a destination HardwareBuffer.
+ * The source texture must be sampleable, and the destination HardwareBuffer must support GPU framebuffer usage.
+ *
+ * @param sourceTexture The source texture to read from
+ * @param hardwareBuffer The destination HardwareBuffer to write into
+ * @return true on success, false on failure
+ */
+public external fun blitTextureToHardwareBuffer(sourceTexture: GPUTexture, hardwareBuffer: HardwareBuffer): Boolean
+
 public external fun initializeCache(device: GPUDevice): Boolean
 public external fun destroyCache(device: GPUDevice)
 public fun Bitmap.createGpuTexture(device: GPUDevice): GPUTexture {
