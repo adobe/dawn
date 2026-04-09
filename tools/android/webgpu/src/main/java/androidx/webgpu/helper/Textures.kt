@@ -18,8 +18,20 @@
 package androidx.webgpu.helper
 
 import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
 import androidx.webgpu.*
 import java.nio.ByteBuffer
+
+/**
+ * Blits a YCbCr HardwareBuffer to an existing RGBA8Unorm texture.
+ * The destination texture must be created with RenderAttachment usage.
+ * 
+ * @param device The GPU device
+ * @param hardwareBuffer The source HardwareBuffer (typically YCbCr format from video/camera)
+ * @param destTexture The destination texture to write to (must be RGBA8Unorm with RenderAttachment usage)
+ * @return true on success, false on failure
+ */
+public external fun blitHardwareBufferToTexture(device: GPUDevice, hardwareBuffer: HardwareBuffer, destTexture: GPUTexture): Boolean
 
 public fun Bitmap.createGpuTexture(device: GPUDevice): GPUTexture {
     val size = GPUExtent3D(width = width, height = height)
