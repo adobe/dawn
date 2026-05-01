@@ -33,7 +33,12 @@ plugins {
 }
 
 def dawnBuildType = findProperty('dawnBuildType') ?: 'Debug'
-def nativeTargetsList = (findProperty('nativeTargets') ?: 'webgpu_dawn,webgpu_c_bundled,webgpu_wrapper_tests').split(',').collect { it.trim() }
+def enableNativeSdk = (findProperty('enableNativeSdk') ?: 'false').toBoolean()
+
+def defaultNativeTargets = enableNativeSdk
+    ? 'webgpu_dawn,webgpu_c_bundled,webgpu_wrapper_tests'
+    : 'webgpu_c_bundled,webgpu_wrapper_tests'
+def nativeTargetsList = (findProperty('nativeTargets') ?: defaultNativeTargets).split(',').collect { it.trim() }
 // When -PabiFilters= is set (comma-separated), native / CMake builds are limited to those ABIs only.
 // If unset, no abiFilters are applied here — same as before this property existed (AGP default ABIs).
 def abiFiltersProp = findProperty('abiFilters')
@@ -56,7 +61,9 @@ android {
         }
         externalNativeBuild {
             cmake {
-                arguments '-DANDROID_STL=c++_shared', '-DDAWN_BUILD_PROTOBUF=OFF'
+                arguments '-DANDROID_STL=c++_shared',
+                          '-DDAWN_BUILD_PROTOBUF=OFF',
+                          "-DWEBGPU_AAR_ENABLE_NATIVE_SDK=${enableNativeSdk ? 'ON' : 'OFF'}"
                 version '3.22.1'
                 targets nativeTargetsList as String[]
             }
@@ -72,8 +79,10 @@ android {
         prefabPublishing true
     }
     prefab {
-        webgpu_dawn {
-            headers "src/main/cpp/gen/include"
+        if (nativeTargetsList.contains('webgpu_dawn')) {
+            webgpu_dawn {
+                headers "src/main/cpp/gen/include"
+            }
         }
         webgpu_c_bundled {
             headers "src/main/cpp/gen/include"
@@ -103,6 +112,11 @@ android {
         pickFirst 'lib/x86_64/libc++_shared.so'
         pickFirst 'lib/armeabi-v7a/libc++_shared.so'
         pickFirst 'lib/arm64-v8a/libc++_shared.so'
+        if (enableNativeSdk) {
+            jniLibs {
+                keepDebugSymbols += ['**/libwebgpu_dawn.so']
+            }
+        }
     }
     ndkVersion findProperty('ndkVersion') ?: '27.0.12077973'
 }
