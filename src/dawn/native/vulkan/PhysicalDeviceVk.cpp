@@ -882,8 +882,17 @@ MaybeError PhysicalDevice::InitializeSupportedLimitsInternal(wgpu::FeatureLevel 
     // multisampling. Vulkan does not provide a reliable way of enforcing this so must potentially
     // use another vec4f slot to emulate this behavior. So on any WebGPU Vulkan backend
     // `maxVertexOutputComponents` must be no less than 72 = (16 * 4 + 8).
-    if (vkLimits.maxVertexOutputComponents < baseLimits.v1.maxInterStageShaderVariables * 4 + 8 ||
-        vkLimits.maxFragmentInputComponents < baseLimits.v1.maxInterStageShaderVariables * 4 + 8) {
+    //
+    // Many PowerVR (ImgTec) drivers only report the Vulkan-spec-guaranteed floor of 64 for
+    // maxVertexOutputComponents/maxFragmentInputComponents, below WebGPU's default tiered
+    // requirement. Rather than discarding the whole physical device (which forces a fallback to
+    // the Null backend), accept the spec floor of 64 = (14 * 4 + 8) for these devices.
+    uint32_t interStageShaderVariablesBase = baseLimits.v1.maxInterStageShaderVariables;
+    if (gpu_info::IsImgTec(GetVendorId())) {
+        interStageShaderVariablesBase = std::min(interStageShaderVariablesBase, 14u);
+    }
+    if (vkLimits.maxVertexOutputComponents < interStageShaderVariablesBase * 4 + 8 ||
+        vkLimits.maxFragmentInputComponents < interStageShaderVariablesBase * 4 + 8) {
         return DAWN_INTERNAL_ERROR("Insufficient Vulkan limits for maxInterStageShaderVariables");
     }
     // Reserve 1 for position and 1 for emulated fragment pixel center.
