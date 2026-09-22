@@ -107,8 +107,20 @@ static wgpu::SharedTextureMemory createSharedTextureMemoryFromAhb(JNIEnv* env,
     }
     *outDevice = wgpu::Device(rawDevice);
 
-    // classes->hardwareBufferClass / isClosedMethod resolved once at init
-    if (env->CallBooleanMethod(hardwareBuffer, classes->hardwareBufferIsClosed)) {
+    if (!hardwareBuffer) {
+        env->ThrowNew(classes->javaIllegalStateException, "HardwareBuffer is null.");
+        return nullptr;
+    }
+
+    // Guard against a closed HardwareBuffer
+    static jmethodID hardwareBufferIsClosed = nullptr;
+    if (!hardwareBufferIsClosed) {
+        jclass hardwareBufferClass = env->GetObjectClass(hardwareBuffer);
+        hardwareBufferIsClosed = env->GetMethodID(hardwareBufferClass, "isClosed", "()Z");
+        env->DeleteLocalRef(hardwareBufferClass);
+    }
+
+    if (env->CallBooleanMethod(hardwareBuffer, hardwareBufferIsClosed)) {
         env->ThrowNew(classes->javaIllegalStateException, "HardwareBuffer is closed.");
         return nullptr;
     }
